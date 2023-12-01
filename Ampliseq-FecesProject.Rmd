@@ -1,0 +1,1926 @@
+---
+title: "Fecal transplant allows transmission of the gut microbiota in honey bees"
+author: "Joanito Liberti, Audam Chhun, Lucie Kesner, and Amélie Cabirol, University of Lausanne"
+date: "11/07/2023"
+output: github_document
+---
+
+# Project description
+This code was used for the analyses of the 16S rRNA gene (V4 region) amplicon sequences generated for the paper: 
+Cabirol A., Chhun A., Liberti J., Kesner L., Neuschwander N., Schaerli Y. and Engel P. (2023) Fecal transplant allows transmission of the gut microbiota in honey bees.
+
+Samples were sequenced by Illumina Technology. Raw data are paired-end fastq files. To acquire the final amplicon sequence variant (ASV) table, this document follows the DADA2 pipeline https://benjjneb.github.io/dada2/tutorial.html in R v4.1.2.
+
+You will need the "Metadata_FecesProject.txt" file containing sample information and qPCR data.
+
+Set paths to match the location of the downloaded files on your local drive. 
+
+# Download and clean fastq files from sequencing facility
+```{bash, eval=FALSE}
+cd /Users/Project/RawFiles
+wget -i RawFilesToDownload.txt
+```
+
+Number of reads per sample
+```{bash, eval=FALSE}
+cd /Users/Project/RawFiles
+for f in *fastq.gz; do
+echo $f
+echo $(zless $f | wc -l)/4|bc
+done
+```
+
+First check the quality of your data with FastQC
+```{bash, eval=FALSE}
+mkdir /Users/Project/DADA2
+mkdir /Users/Project/DADA2/analysis
+mkdir /Users/Project/DADA2/analysis/00_FASTQC/
+  cd /Users/Project/RawFiles
+for f in *.fastq.gz; do 
+fastqc $f -o /Users/Project/DADA2/analysis/00_FASTQC/; 
+done
+```
+
+Clean up sample names
+```{bash, eval=F}
+cd /Users/Project/RawFiles
+for f in *fastq.gz; do mv $f ${f/_001_*/.fastq.gz}; done
+for f in *fastq.gz; do mv $f ${f//_/.}; done
+for f in *fastq.gz; do mv $f ${f/.L1./_}; done
+for f in *fastq.gz; do mv $f ${f/.R1/_R1}; done
+for f in *fastq.gz; do mv $f ${f/.R2/_R2}; done
+```
+
+Remove primers and anything before and after with Cutadapt
+```{bash, eval=FALSE}
+mkdir /Users/Project/DADA2/analysis/02_dada2
+cd /Users/Project/RawFiles
+  for f in *R1.fastq.gz; do 
+/Users/Library/Python/2.7/bin//cutadapt -G GGACTACHVGGGTWTCTAAT -g GTGCCAGCMGCCGCGGTAA -o ${f/.fastq/.cut.fastq} -p ${f/R1.fastq/R2.cut.fastq} $f ${f/R1.fastq/R2.fastq} --pair-filter=any; done
+```
+
+Move trimmed reads into a separate folder
+```{bash, eval=FALSE}
+mkdir /Users/Project/DADA2/analysis/01_trimmed
+cd /Users/Project/RawFiles
+for f in *cut.fastq.gz; do mv $f /Users/Project/DADA2/analysis/01_trimmed/$f; done
+```
+
+Number of reads per sample after cutadapt
+```{bash, eval=FALSE}
+cd /Users/Project/RawFiles/
+
+echo -e "Sample""\t""Raw""\t""Cutadapt"
+
+for f in $(ls *R1.fastq.gz | cut -d '_' -f 1|sort|uniq); do
+raw=`echo $(zless /Users/Project/RawFiles/$f\_R1.fastq.gz | wc -l)/4|bc`
+cut=`echo $(zless /Users/Project/DADA2/analysis/01_trimmed/$f\_R1.cut.fastq.gz | wc -l)/4|bc`
+
+echo -e $f"\t"$raw"\t"$cut
+done
+```
+
+# Now we can feed the quality-filtered reads to the DADA2 pipeline
+
+## Getting ready
+
+First, install required packages if needed (uncomment all installation lines)
+```{r, eval=FALSE}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install("dada2")
+# BiocManager::install("DECIPHER")
+# BiocManager::install("phyloseq")
+# BiocManager::install("biomformat")
+# BiocManager::install("ShortRead")
+# BiocManager::install("Biostrings")
+# BiocManager::install("genefilter")
+# BiocManager::install("decontam")
+# BiocManager::install("DESeq2")
+# install.packages("ggplot2")
+# install.packages("phangorn")
+# install.packages("vegan")
+# install.packages("dplyr")
+# install.packages("scales")
+# install.packages("RColorBrewer")
+# install.packages("reshape2")
+# install.packages("cowplot")
+# install.packages("tidyverse")
+# install.packages("readxl")
+# install.packages("ggbeeswarm")
+# install.packages("magrittr")
+# install.packages("ggpubr")
+# install.packages('dendextend')
+# install.packages("multcomp")
+
+# Load libraries
+library(dada2)
+library(ShortRead)
+library(Biostrings)
+library(ggplot2)
+library(biomformat)
+```
+
+Set the working directory 
+```{r setup}
+path <- "/Users/"
+knitr::opts_knit$set(root.dir = normalizePath(path)) 
+```
+
+```{r, eval=FALSE}
+library(dada2); packageVersion("dada2")
+pathraw <-"/Users/Project/DADA2/analysis/01_trimmed" 
+
+list.files(pathraw)
+
+fnFs <- sort(list.files(pathraw, pattern="R1.cut.fastq.gz", full.names = TRUE))
+fnRs <- sort(list.files(pathraw, pattern="R2.cut.fastq.gz", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+sample.names
+```
+
+Quality scores
+```{r, eval=FALSE}
+path<-"/Users/Project/DADA2/analysis/01_trimmed"
+dev.new()
+# Quality scores of R1 reads
+plotQualityProfile(fnFs[1:20]) 
+plotQualityProfile(fnFs[21:40])
+plotQualityProfile(fnFs[41:60])
+plotQualityProfile(fnFs[61:80])
+plotQualityProfile(fnFs[81:96])
+
+# Quality scores of R2 reads
+plotQualityProfile(fnRs[1:20]) 
+plotQualityProfile(fnRs[21:40])
+plotQualityProfile(fnRs[41:60])
+plotQualityProfile(fnRs[61:80])
+plotQualityProfile(fnRs[81:95])
+```
+
+## Trim the data
+```{r, eval=FALSE}
+# Place filtered files in filtered/ subdirectory
+path<-"/Users/Project/DADA2/analysis/02_dada2"
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+sys_str <- Sys.time()
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(232,231), 
+                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,      
+                     compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+sys_str[2] <- Sys.time()
+sys_str
+rm(sys_str)
+
+derepFs <- derepFastq(filtFs)
+derepRs <- derepFastq(filtRs)
+
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+
+head(out)
+out
+```
+
+## Learn the error rates
+```{r, eval=FALSE}
+sys_str <- Sys.time()
+set.seed(1) # Since we randomize what samples we use for learning the error rates, we use set.seed() to make the analysis reproducible
+errF <- learnErrors(filtFs, randomize=TRUE, nbases=3e8, multithread=TRUE) # here we need to increase nbases to sample more than only a few samples, default is 1e8
+set.seed(1)
+errR <- learnErrors(filtRs, randomize=TRUE, nbases=3e8, multithread=TRUE) # here we need to increase nbases to sample more than only a few samples, default is 1e8
+plotErrors(errF, nominalQ=TRUE)
+
+# In the plots, the black line is the error model, the dots are the actual errors
+sys_str[2] <- Sys.time()
+sys_str
+rm(sys_str)
+```
+
+## Sample inference
+```{r, eval=FALSE}
+sys_str <- Sys.time()
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE) 
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE) 
+sys_str[2] <- Sys.time()
+sys_str
+rm(sys_str)
+
+dadaFs[[1]]
+dadaRs[[1]]
+```
+
+## Merge paired reads
+```{r, eval=FALSE}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE, trimOverhang=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+```
+
+## Construct sequence table
+```{r, eval=FALSE}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+```
+
+Remove sequences that appear too short or long to be real
+```{r, eval=FALSE}
+seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% 250:255]
+```
+
+Remove chimeras
+```{r, eval=FALSE}
+seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab2)
+```
+
+## Track reads through the pipeline
+```{r, eval=FALSE}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+tail(track)
+```
+
+## Assign taxonomy
+```{r, eval=FALSE}
+#assign Taxonomy using Silva 
+taxa <- assignTaxonomy(seqtab.nochim, "/Users/Project/DADA2/silva_nr99_v138.1_train_set.fa.gz", multithread=TRUE)
+taxa <- addSpecies(taxa, "/Users/Project/DADA2/silva_species_assignment_v138.1.fa.gz")
+
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+```{bash, eval=FALSE}
+mkdir /Users/Project/DADA2/analysis/03_Taxonomy
+```
+
+```{r, eval=FALSE}
+pathtax <- "/Users/Project/DADA2/analysis/03_Taxonomy/"
+
+# Save taxonomy assignments from dada2 pipeline
+write.csv2(file=paste(pathtax,"Taxtable_dada2",sep=""),taxa)
+```
+
+Convert to fasta
+```{r, eval=FALSE}
+uniquesToFasta(seqtab.nochim, fout='/Users/Project/DADA2/analysis/03_Taxonomy/seqtab.nochim.fasta', ids=colnames(seqtab.nochim))
+```
+
+## Prepare a phylogenetic tree with phangorn
+```{r, eval=FALSE}
+library(DECIPHER) # Make alignment with DECIPHER...
+library(phangorn) # ...then build tree with phangorn
+asv.seqs <- getSequences(seqtab.nochim )
+names(asv.seqs) <- asv.seqs
+asv.alignment <- AlignSeqs(DNAStringSet(asv.seqs), anchor=NA)
+
+# convert to phangorn and run phylogenetic tree reconstruction
+phang.align <- phyDat(as(asv.alignment, "matrix"), type="DNA")
+dm <- dist.ml(phang.align)
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+fit = pml(treeNJ, data=phang.align)
+
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+                      rearrangement = "stochastic", control = pml.control(trace = 0))
+detach("package:phangorn", unload=TRUE)
+```
+
+## Load and filter the data in phyloseq
+```{r, eval=FALSE}
+library(ggplot2)
+library(vegan) # ecological diversity analysis
+library(dplyr)
+library(scales) # scale functions for vizualizations
+library(grid)
+library(RColorBrewer)
+library(reshape2) # data manipulation package
+library(cowplot)
+library(phyloseq)
+library(tidyverse)
+library(readxl)
+
+# setting the working directory
+setwd("/Users/Project/DADA2/")
+
+# Set plotting theme
+theme_set(theme_bw())
+
+#Data frame containing sample information and qPCR results
+samdf = read.table("/Users/Project/Metadata_FecesProject.txt", sep = "\t", colClasses=c("Picogreen"="numeric"), header = T, fill=TRUE) # fill=TRUE allows to read a table with missing entries
+rownames(samdf) = samdf$Sample_ID
+
+#Create a phyloseq object
+ps.raw <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa), 
+               phy_tree(fitGTR$tree))  
+```
+
+## Export raw ASV table
+```{r, eval=FALSE}
+table = merge( tax_table(ps.raw),t(otu_table(ps.raw)), by="row.names")
+write.table(table, "/Users/Project/DADA2/RawASVtable_dada2taxa.txt", sep="\t")
+```
+
+## Filter the ASV table and clean the classification
+```{r, eval=FALSE}
+# Filter out unclassified reads
+ps <- subset_taxa(ps.raw, Kingdom !="Unclassified" | is.na(Kingdom), 
+                      prunesamples=TRUE)
+
+# give new names to ASV's
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+
+# Instead of having NAs in the taxa names, at all levels of taxonomical assignment we replace them with the lowest level that the classifier could achieve
+tax <- data.frame(tax_table(ps))
+
+tax.clean <- data.frame(row.names = row.names(tax),
+Kingdom = str_replace(tax[,1], "D_0__",""),
+Phylum = str_replace(tax[,2], "D_1__",""),
+Class = str_replace(tax[,3], "D_2__",""),
+Order = str_replace(tax[,4], "D_3__",""),
+Family = str_replace(tax[,5], "D_4__",""),
+Genus = str_replace(tax[,6], "D_5__",""),
+Species = str_replace(tax[,7], "D_6__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])} 
+
+####### Fill gaps in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+
+#Fill in missing taxonomy
+if (tax.clean[i,2] == ""){
+kingdom <- paste("Kingdom_", tax.clean[i,1], sep = "")
+tax.clean[i, 2:7] <- kingdom    
+} else if (tax.clean[i,3] == ""){
+phylum <- paste("Phylum_", tax.clean[i,2], sep = "")
+tax.clean[i, 3:7] <- phylum
+} else if (tax.clean[i,4] == ""){
+class <- paste("Class_", tax.clean[i,3], sep = "")
+tax.clean[i, 4:7] <- class
+} else if (tax.clean[i,5] == ""){
+order <- paste("Order_", tax.clean[i,4], sep = "")
+tax.clean[i, 5:7] <- order
+} else if (tax.clean[i,6] == ""){
+family <- paste("Family_", tax.clean[i,5], sep = "")
+tax.clean[i, 6:7] <- family
+} else if (tax.clean[i,6] == ""){
+tax.clean$Species[i] <- paste("Genus",tax.clean$Genus[i], sep = "_")
+}
+}
+
+tax_table(ps) <- as.matrix(tax.clean)
+```
+
+## Save the phyloseq object so next time you do not need to rerun the analysis from scratch 
+```{r, eval=FALSE}
+saveRDS(ps, "/Users/Project/DADA2/ps_dada2taxa_FecesProject.rds")
+
+# Grab the XStringSet object with the OTU/ASV sequences
+rs <- refseq(ps)
+rs # inspect
+# Get strings with the full taxonomy for each ASV
+tax <- tax_table(ps)
+head(tax) # inspect
+tax_strings <- apply(tax, 1, paste, collapse=";")
+head(tax_strings) # inspect
+# Create new names for the sequences in the refseq object; these will become
+# the sequence headers in the fasta file. Here, I set these to be the ASV
+# name and the tax string separated by one space (determined by the sep
+# parameter)
+new_names <- paste(taxa_names(ps), tax_strings, sep = " ")
+head(new_names) # inspect
+# Update the refeq names and save as a fasta file
+names(rs) <- new_names
+rs # inspect
+Biostrings::writeXStringSet(rs, "/Users/Project/DADA2/analysis/03_Taxonomy/AllRawASVs.fasta")
+```
+
+## Blast all ASVs to complement the taxonomy 
+```{bash, eval=FALSE}
+cat AllRawASVs.fasta | parallel --block 2000k --recstart '>' --pipe /work/Joanito_new/Blast/ncbi-blast-2.11.0+/bin/blastn -query AllRawASVs.fasta -db /work/nucleotide/nt/nt -outfmt \"6 std stitle\" -evalue 1e-3 -max_target_seqs 5 -num_threads 35 > AllRawASVs_Blast.txt
+```
+
+Filter Blast results to retain only first hit of each ASV
+```{r, eval=FALSE}
+bl <- read.table("/Users/Project/DADA2/analysis/03_Taxonomy/AllRawASVs_Blast.txt", header=F, sep = "\t")
+bl <- bl[!duplicated(bl$V1),]
+write.table(bl, "/Users/Project/DADA2/analysis/03_Taxonomy/AllRawASVs_Blast_OnlyFirstHit.txt", sep = "\t")
+write.table(tax_table(ps), "/Users/Project/DADA2/analysis/03_Taxonomy/TaxTable_ps.txt", sep = "\t")
+```
+
+# Preliminary analyses and quality checks
+
+## Getting ready
+
+**You can start the analysis from here if you saved the ps object**
+```{r, eval=F}
+library(ggplot2)
+library(vegan) # ecological diversity analysis
+library(dplyr)
+library(scales) # scale functions for vizualizations
+library(grid)
+library(RColorBrewer)
+library(reshape2) # data manipulation package
+library(cowplot)
+library(ggbeeswarm)
+library(phyloseq)
+library(tidyverse)
+library(readxl)
+
+ps <- readRDS("/Users/Project/DADA2/ps_dada2taxa_FecesProject.rds")
+tax_tab <- read.table("/Users/Project/DADA2/analysis/03_Taxonomy/TaxTable_ps_Annotated.txt", header = T, sep = "\t") # read in the manually annotated taxonomy
+row.names(tax_tab) <- tax_tab[,1]
+tax_tab[,1] <- NULL
+tax_table(ps) <- as.matrix(tax_tab)
+
+#Data frame containing sample information and qPCR data
+samdf = read.table("/Users/Project/Metadata_FecesProject.txt", sep="\t", colClasses=c("Picogreen"="numeric"), header = T, fill=TRUE, na.strings=("")) # fill=TRUE allows to read a table with missing entries
+rownames(samdf) = samdf$Sample_ID
+```
+
+Or if you saved the whole session, you can load it like this
+```{r, eval=F}
+#load("/Users/Project/DADA2/Ampliseq.rdata")
+```
+
+Set the working directory 
+```{r setup}
+path <- "/Users/Project/DADA2/analysis/02_dada2"
+getwd()
+knitr::opts_knit$set(root.dir = normalizePath(path)) 
+```
+
+## Plot distribution of reads per sample
+```{r, eval=F}
+# Make a data frame with a column for the read counts of each sample
+sample_sum_df <- data.frame(sum = sample_sums(ps))
+
+# Histogram of sample read counts
+dev.new()
+ggplot(sample_sum_df, aes(x = sum)) + 
+  geom_histogram(color = "black", fill = "indianred", binwidth = 1000) +
+  ggtitle("Distribution of sample sequencing depth") + 
+  xlab("Read counts") +
+  theme(axis.title.y = element_blank())
+
+# mean, max and min of sample read counts
+smin <- min(sample_sums(ps))
+smean <- mean(sample_sums(ps))
+smax <- max(sample_sums(ps))
+
+# printing the results
+cat("The minimum sample read count is:",smin)
+cat("The average sample read count is:",smean)
+cat("The maximum sample read count is:",smax)
+
+# setting the seed to one value in order to create reproducible results
+set.seed(1)  
+```
+
+## Rarefaction curves
+```{r, eval=F}
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+n = 4
+cols = gg_color_hue(n)
+
+ps@sam_data$Sample_Cols<-cols[as.factor(ps@sam_data$Sample_type)]
+
+dev.new()
+pdf(file="Rarefactions.pdf",width=5,height=4, pointsize=4)
+rarecurve(otu_table(ps), ylab = "Number of ASVs", xlab = "Number of sequences", col= ps@sam_data$Sample_Cols, step= 50, cex=0.5)
+dev.off()
+
+rarecurve(otu_table(ps), ylab = "Number of ASVs", xlab = "Number of sequences", col= ps@sam_data$Sample_Cols, step= 50, cex=0.5)
+```
+
+## Plot bacterial stacked bars
+
+Retain only ASVs that have at least 1% relative abundance in minimum 1 sample
+```{r, eval=F}
+library(genefilter)
+mothur_proportions = transform_sample_counts(ps, function(x) {x/sum(x)})
+Filtered = filter_taxa(mothur_proportions, filterfun(kOverA(1, 0.01)), TRUE)
+```
+
+Plot
+```{r, eval=F}
+mdf = psmelt(Filtered)
+mdf <- mdf[order(factor(mdf$Generation, ordered=TRUE), mdf$Sample_type, mdf$Sample), ]  # Let's first sort by Treatment, then hive, then sample ID
+mdf$Sample <- factor(mdf$Sample, levels = unique(mdf$Sample), ordered=TRUE)  # we need to do this to retain the order in plot.
+tail(mdf, 4)
+
+library(RColorBrewer)
+cbPalette<-colorRampPalette(brewer.pal(12, "Paired"))
+
+set.seed(3) # Here we use set.seed to make the colors reproducible, because in the scale_fill_manual we use "sample" to shuffle the order of colors of the palette
+p1 = ggplot(mdf, aes_string(x = "Sample", y = "Abundance", fill = "Annotated")) +
+        geom_bar(stat = "identity", position = "stack", color = "black") +
+        ylab("Relative abundance") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="bottom") +
+        scale_fill_manual(values=sample(cbPalette(61)))
+
+print(p1, width = 1000, height = 200)
+```
+
+## Plot stacked bars of the various control samples (blanks, mock, negative PCR controls)
+
+Retain only ASVs that have at least 1% relative abundance in 1 sample
+```{r, eval=F}
+# ps.mock <- subset_samples(ps, Sample_ID == "MOCK")
+ps.Control <- subset_samples(ps, Sample_type == "Control")
+
+library(genefilter)
+# proportions.mock = transform_sample_counts(ps.mock, function(x) {x/sum(x)})
+# Filtered.mock = filter_taxa(proportions.mock, filterfun(kOverA(1, 0.001)), TRUE)
+proportions.Control = transform_sample_counts(ps.Control, function(x) {x/sum(x)})
+Filtered.Control = filter_taxa(proportions.Control, filterfun(kOverA(1, 0.01)), TRUE)
+```
+
+Plot
+```{r, eval=F}
+mdf.Control = psmelt(Filtered.Control)
+
+# Make a color palette
+library(RColorBrewer)
+cbPalette<-colorRampPalette(brewer.pal(15, "Paired"))
+
+p2 = ggplot(mdf.Control, aes_string(x = "Sample", y = "Abundance", fill = "Annotated")) +
+  geom_bar(stat = "identity", position = "stack", color = "black", size = 0.2) +
+  ylab("Relative abundance in negative PCR control") +
+  xlab(element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="bottom") +
+  scale_fill_manual(values=cbPalette(67))
+
+
+print(p2, width = 1000, height = 200)
+```
+
+Save plots to pdf
+```{r, eval=F}
+dev.new()
+pdf(file="Barplots_allsamples.pdf",width=8,height=5, pointsize=4)
+p1
+dev.off()
+
+dev.new()
+pdf(file="Barplots_ControlSamples.pdf", width=8,height=20, pointsize=4)
+p2
+dev.off()
+```
+
+## Distribution of library sizes
+```{r, eval=F}
+df <- as.data.frame(sample_data(ps)) # Put sample_data into a ggplot-friendly data.frame
+df$LibrarySize <- sample_sums(ps)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=Negative)) + geom_point()
+ggsave(file="DistributionLibrarySizes.pdf", width=8, height=6, useDingbats=FALSE)
+```
+
+## Check which sequences are likely to be contaminants and filter them out
+
+Frequency method
+```{r, eval=F}
+library(decontam); packageVersion("decontam")
+contamdf.freq <- isContaminant(ps, method="frequency", conc="Picogreen")
+head(contamdf.freq)
+table(contamdf.freq$contaminant)
+
+which(contamdf.freq$contaminant)
+
+# Plot frequencies of identified contaminants vs. their concentrations after PCR
+plot_frequency(ps, taxa_names(ps)[sample(which(contamdf.freq$contaminant), )], conc="Picogreen") + 
+  xlab("DNA Concentration (PicoGreen ng/μl)")
+ggsave(file="ContaminantFreqVsPicogreenConc.pdf", width=12, height=10, useDingbats=FALSE)
+```
+
+Prevalence method
+```{r, eval=F}
+contamdf.prev <- isContaminant(ps, neg = "Negative", normalize = TRUE, threshold = 0.1, detailed = T)
+table(contamdf.prev$contaminant)
+
+which(contamdf.prev$contaminant)
+
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa <- transform_sample_counts(ps, function(abund) 1*(abund>0))
+ps.pa.neg <- prune_samples(sample_data(ps.pa)$Negative == "TRUE", ps.pa)
+ps.pa.pos <- prune_samples(sample_data(ps.pa)$Negative == "FALSE", ps.pa)
+
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos), pa.neg=taxa_sums(ps.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+
+# Plot prevalences of identified contaminants
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point(size=3, position=position_jitter(h=0.05,w=0.05)) +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+ggsave(file="ContaminantPrevalences.pdf", width=8, height=6, useDingbats=FALSE)
+```
+
+Both methods combined
+```{r, eval=F}
+contamdf.both <- isContaminant(ps, conc = "Picogreen", neg = "Negative", method = "either", normalize = TRUE, detailed = T)
+table(contamdf.both$contaminant)
+
+which(contamdf.both$contaminant)
+
+# Make a phyloseq object with only the contaminants
+contaminants <- prune_taxa(contamdf.both$contaminant, ps)
+tax_table(contaminants)
+
+contam.names <- taxa_names(contaminants)
+contam.names
+
+# Inspect and filter identified contaminants
+library(genefilter)
+proportions = transform_sample_counts(ps, function(x) {x/sum(x)})
+contam.merged <- prune_taxa(contam.names,proportions)
+cont.rel = psmelt(contam.merged)
+ps.rel = psmelt(proportions)
+ps.rel$AbundPico <- ps.rel$Abundance * ps.rel$Picogreen # subset by column
+
+library(RColorBrewer)
+cbPalette<-colorRampPalette(brewer.pal(12, "Paired"))
+cont.rel$AbundPico <- cont.rel$Abundance * cont.rel$Picogreen # subset by column
+cont.rel <- cont.rel[order(factor(cont.rel$Negative, levels = c("TRUE", "FALSE"), ordered=TRUE), cont.rel$Negative, cont.rel$Sample_ID), ]  # Let's first sort samples
+cont.rel$Sample_ID <- factor(cont.rel$Sample_ID, levels = unique(cont.rel$Sample_ID), ordered=TRUE)  # we need to do this to retain the order in plot.
+tail(cont.rel, 4)
+cont.rel$Negative = factor(cont.rel$Negative, levels=c('TRUE','FALSE'))
+levels(cont.rel$Negative) <- c(levels(cont.rel$Negative), "Control samples (blanks and H2O)")
+levels(cont.rel$Negative) <- c(levels(cont.rel$Negative), "Experimental samples")                              
+cont.rel$Negative[cont.rel$Negative == 'TRUE'] <- 'Control samples (blanks and H2O)'
+cont.rel$Negative[cont.rel$Negative == 'FALSE'] <- 'Experimental samples'
+
+cont1 <- ggplot(cont.rel, aes_string(x = "Sample_ID", y = "Abundance", fill = "OTU")) +
+  geom_bar(stat = "identity", position = "stack", color = "black", size = 0.2) +
+  ylab("Relative abundance") +
+  xlab(element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="none") +
+  scale_fill_manual(values=cbPalette(55)) +
+  facet_grid(. ~ Negative, scale="free_x", space = "free_x") +
+  ggtitle("Relative Abundance of Contaminant ASVs") 
+
+cont2 <- ggplot(cont.rel, aes_string(x = "Sample_ID", y = "AbundPico", fill = "OTU")) +
+  geom_bar(stat = "identity", position = "stack", color = "black", size = 0.2) +
+  ylab("16S copies per ngDNA") +
+  xlab(element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="bottom") +
+  scale_fill_manual(values=cbPalette(55)) +
+  facet_grid(. ~ Negative, scale="free_x", space = "free_x") +
+  ggtitle("Abundance of Contaminant ASVs, Normalized by DNA")
+
+cont3 <- ggplot(cont.rel, aes_string(x = "Sample_ID", y = "Abundance", fill = "Annotated")) +
+  geom_bar(stat = "identity", position = "stack", color = "black", size = 0.2) +
+  ylab("Relative abundance") +
+  xlab(element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="none") +
+  scale_fill_manual(values=cbPalette(40)) +
+  facet_grid(. ~ Negative, scale="free_x", space = "free_x") +
+  ggtitle("Relative Abundance of Contaminant Genera")
+
+cont4 <- ggplot(cont.rel, aes_string(x = "Sample_ID", y = "AbundPico", fill = "Annotated")) +
+  geom_bar(stat = "identity", position = "stack", color = "black", size = 0.2) +
+  ylab("16S copies per ngDNA") +
+  xlab(element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="bottom") +
+  scale_fill_manual(values=cbPalette(40)) +
+  facet_grid(. ~ Negative, scale="free_x", space = "free_x") +
+  ggtitle("Abundance of Contaminant ASVs, Normalized by DNA")
+
+library(cowplot)
+plot_grid(cont1,cont2,nrow=2,align = "v", rel_heights=c(2,4.5), labels="AUTO")
+ggsave(file="ContaminantASVs.pdf", width=20, height=15, useDingbats=FALSE)
+plot_grid(cont3,cont4,nrow=2,align = "v", rel_heights=c(2,3.5), labels="AUTO")
+ggsave(file="Contaminant_Genus.pdf", width=20, height=15, useDingbats=FALSE)
+```
+
+New phyloseq object after filtering out the contaminants
+```{r, eval=F}
+# contamdf.prev$contaminant[rownames(contamdf.prev)=="ASV19"] <- FALSE # ASV19 is a real experimental bacterium, wrongly labeled as contaminant by decontam, so we modify that
+ps.noncontam <- prune_taxa(!contamdf.both$contaminant, ps)
+ps.noncontam
+```
+
+Remove non experimental samples before replotting qPCR and MiSeq results
+```{r, eval=F}
+ps.noncontam.filt <- prune_samples(ps.noncontam@sam_data$Sample_type == "Feces" | ps.noncontam@sam_data$Sample_type == "Gut" | ps.noncontam@sam_data$Sample_type == "Gut-Feces", ps.noncontam)
+ps.noncontam.filt = filter_taxa(ps.noncontam.filt, function(x) sum(x) > 0, TRUE)
+ps.noncontam.filt
+```
+
+# Analyses 
+
+## Plot bacterial stacked bars (Fig. 2a & Fig 3b)
+
+Retain only ASVs that have at least 1% relative abundance in minimum 2 samples
+```{r, eval=F}
+library(genefilter)
+mothur_proportions = transform_sample_counts(ps.noncontam.filt, function(x) {x/sum(x)})
+Filtered = filter_taxa(mothur_proportions, filterfun(kOverA(2, 0.01)), TRUE)
+```
+
+Plots
+```{r, eval=F}
+mdf = psmelt(Filtered)
+
+mdf$Sample_type <- factor(mdf$Sample_type, levels = c("Gut", "Feces", "Gut-Feces"))
+
+library(RColorBrewer)
+
+cbPalette<-colorRampPalette(brewer.pal(15, "Paired"))
+
+set.seed(3) # Change the number within parentheses to change the order of colors in the plot. Here we use set.seed to make the colors reproducible, because in scale_fill_manual we use "sample" to shuffle the color order.
+
+p1 = ggplot(mdf, aes_string(x = "Sample", y = "Abundance", fill = "Annotated")) +
+        geom_bar(stat = "identity", position = "stack", color = "black") +
+        ylab("Relative abundance") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position="bottom", strip.background = element_blank(), strip.text.x = element_blank()) + 
+        facet_grid(. ~Generation + Sample_type, scale="free", space="free") +
+        scale_fill_manual(values=sample(cbPalette(17)))  
+
+print(p1, width = 1000, height = 200)
+```
+
+## Plot ordinations using Principal Coordinate analysis of Bray-Curtis dissimilarities to assess beta-diversity 
+
+First, combine qPCR and MiSeq data
+```{r, eval=F}
+proportions = transform_sample_counts(ps.noncontam.filt, function(x) {x/sum(x)})
+
+proportions = subset_samples(proportions, Pair != "2_10_2") # Remove a pair of samples as one sample did not have qPCR data
+
+#calculate ratios
+ratios = merge( tax_table(proportions),t(otu_table(proportions)), by="row.names")
+copynum = data.frame(sample_data(proportions)[,"CopyNum_norm"])
+
+row.names(ratios) <- ratios[,1]
+
+ratios <- ratios[,10:length(ratios)]
+
+copies = data.frame(row.names = (row.names(ratios)))
+for (i in 1:ncol(ratios)){
+  numbers = ratios[,i]*copynum$CopyNum_norm[i]  
+  copies = cbind(copies,numbers)
+}
+colnames(copies) = colnames(ratios)
+
+# Phyloseq object with the combined Miseq and qPCR data 
+ps_copies <- phyloseq(otu_table(copies, taxa_are_rows=T), 
+               sample_data(samdf), 
+               tax_table(proportions),
+               phy_tree(proportions))
+```
+
+Split by generation
+```{r, eval=F}
+#Absolute abundances
+ps.copies.gen1 <- prune_samples(ps_copies@sam_data$Generation == "1", ps_copies)
+ps.copies.gen1 = filter_taxa(ps.copies.gen1, function(x) sum(x) > 0, TRUE)
+ps.copies.gen1
+
+ps.copies.gen2 <- prune_samples(ps_copies@sam_data$Generation == "2", ps_copies)
+ps.copies.gen2 = filter_taxa(ps.copies.gen2, function(x) sum(x) > 0, TRUE)
+ps.copies.gen2
+
+# Relative abundances
+ps.gen1 <- prune_samples(ps.noncontam.filt@sam_data$Generation == "1", ps.noncontam.filt)
+ps.gen1 = filter_taxa(ps.gen1, function(x) sum(x) > 0, TRUE)
+ps.gen1
+
+ps.gen2 <- prune_samples(ps.noncontam.filt@sam_data$Generation == "2", ps.noncontam.filt)
+ps.gen2 = filter_taxa(ps.gen2, function(x) sum(x) > 0, TRUE)
+ps.gen2
+```
+
+Ordinations using qPCR-normalized counts for the comparison of gut inoculated vs. feces-inoculated bees in generation 2, and relative abundances for generation 1 and 2 (we cannot use qPCR-normalized counts for generation 1 as feces and gut have different units)
+```{r, eval=F}
+### Ordination with relative abundances for generation 1 ###
+bee_pcoa <- ordinate(
+  physeq = ps.gen1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+# checking the ordination by making a scree plot
+plot_ordination(
+  physeq = ps.gen1,
+  ordination = bee_pcoa,
+  type="scree")
+
+# Plot PCoA
+p2 <- plot_ordination(
+  physeq = ps.gen1,
+  ordination = bee_pcoa,
+  axes=c(1,2),
+  shape = "Sample_type",
+  color = "Sample_type")
+
+# improve aesthetic (Fig. 2c)
+betaplotG1 <- p2 +
+  theme(legend.position="none")+
+  geom_hline(yintercept=0, linewidth= 2, linetype=2, colour="darkgrey")+
+  geom_vline(xintercept=0, linewidth= 2, linetype=2, colour="darkgrey")+
+
+  geom_point(aes(fill = Sample_type, size = 15), shape = 21, size = 15, colour = "black", stroke = 1.5, alpha = 0.9) +
+  scale_fill_manual(values=c("#FF9999", "#99CCFF"))+
+  stat_ellipse(type = "norm", linetype = 1, linewidth=2,inherit.aes = TRUE)+
+  scale_color_manual(values=c("#FF9999", "#99CCFF"))+
+  theme(axis.title.x=element_text(colour="black", size=45, vjust = - 1.5))+
+  theme(axis.title.y=element_text(colour="black", size=45, vjust = + 2.5))+
+  theme(axis.text.x = element_text(size=rel(6), colour='black', vjust = -0.5))+
+  theme(axis.text.y = element_text(size=rel(6), colour='black', hjust = -.25))+
+  theme(panel.border = element_rect(fill=NA, colour = "black", size=2))+
+  theme(axis.ticks.length =unit(2.5,"mm"))+
+  scale_y_continuous(
+  labels = scales::number_format(accuracy = 0.1))+
+  theme(plot.margin = margin(1.5,1.5,1,1, "cm"))+
+  theme(
+    panel.background = element_rect(fill = "transparent", colour = NA) # bg of the panel
+    , plot.background = element_rect(fill = "transparent", colour = NA) # bg of the plot
+    , panel.grid.major = element_blank() # get rid of major grid
+    , panel.grid.minor = element_blank() # get rid of minor grid
+    , legend.background = element_rect(fill = "transparent", colour = NA) # get rid of legend bg
+    , legend.box.background = element_rect(fill = "transparent", colour = NA) # get rid of legend panel bg
+    , axis.line = element_line(colour = "black")
+    , axis.ticks = element_line(colour='black', linewidth = 2)
+  )+
+  labs(y= "PCoA2 (15.3%)", x = "PCoA1 (25.7%)")
+
+
+ggsave("Fig 2c", plot=betaplotG1, device = png, width =10, height=10, dpi=300)
+
+### Ordination with qPCR-normalized counts for generation 2 ###
+bee_pcoa <- ordinate(
+  physeq = ps.copies.gen2,
+  method = "PCoA",
+  distance = "bray",
+  trymax = 100
+)
+
+# checking the ordination by making a scree plot
+plot_ordination(
+  physeq = ps.copies.gen2,
+  ordination = bee_pcoa,
+  type="scree")
+
+# Plot PCoA
+p3 <- plot_ordination(
+  physeq = ps.copies.gen2,
+  ordination = bee_pcoa,
+  axes=c(1,2),
+  color = "Sample_type",
+  title = "PCoA of Bray-Curtis dissimilarities - absolute abundance, generation 2")  +
+  geom_point(aes(color = Sample_type), alpha = 1, size = 3)
+
+p3
+ggsave(height=5,width=7,dpi=300, filename="Ordination_qPCRnormalized_Gen2_FecesProject_PCoA_Bray.pdf", useDingbats=FALSE)
+
+### Ordination with relative abundances for generation 2 ###
+bee_pcoa <- ordinate(
+  physeq = ps.gen2, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+# checking the ordination by making a scree plot
+plot_ordination(
+  physeq = ps.gen2,
+  ordination = bee_pcoa,
+  type="scree")
+
+# Plot PCoA
+p4 <- plot_ordination(
+  physeq = ps.gen2,
+  ordination = bee_pcoa,
+  axes=c(1,2),  
+  color = "Sample_type",
+  shape = "Sample_type")
+
+install.packages("ggforce")
+library(ggforce)
+
+# Improve aesthetic (Figure 3d)
+betaplotG2 <- p4 +
+theme(legend.position="none")+
+  geom_hline(yintercept=0, linewidth= 2, linetype=2, colour="darkgrey")+
+  geom_vline(xintercept=0, linewidth= 2, linetype=2, colour="darkgrey")+
+
+  geom_point(aes(fill = Sample_type, size = 15), shape = 21, size = 15, colour = "black", stroke = 1.5, alpha = 0.9) +
+  scale_fill_manual(values=c("#FF9999", "#99CCFF"))+
+  stat_ellipse(type = "norm", linetype = 1, linewidth=2,inherit.aes = TRUE)+
+  scale_color_manual(values=c("#FF9999", "#99CCFF"))+
+  
+  theme(axis.title.x=element_text(colour="black", size=45, vjust = - 1.5))+
+  theme(axis.title.y=element_text(colour="black", size=45, vjust = + 2.5))+
+  theme(axis.text.x = element_text(size=rel(6), colour='black', vjust = -0.5))+
+  theme(axis.text.y = element_text(size=rel(6), colour='black', hjust = -.25))+
+  theme(panel.border = element_rect(fill=NA, colour = "black", size=2))+
+  theme(axis.ticks.length =unit(2.5,"mm"))+
+  scale_y_continuous(
+  labels = scales::number_format(accuracy = 0.1))+
+  theme(plot.margin = margin(1.5,1.5,1,1, "cm"))+
+  theme(
+    panel.background = element_rect(fill = "transparent", colour = NA) # bg of the panel
+    , plot.background = element_rect(fill = "transparent", colour = NA) # bg of the plot
+    , panel.grid.major = element_blank() # get rid of major grid
+    , panel.grid.minor = element_blank() # get rid of minor grid
+    , legend.background = element_rect(fill = "transparent", colour = NA) # get rid of legend bg
+    , legend.box.background = element_rect(fill = "transparent", colour = NA) # get rid of legend panel bg
+    , axis.line = element_line(colour = "black")
+    , axis.ticks = element_line(colour='black', linewidth = 2)
+  )+
+  labs(y= "PCoA2 (24.1%)", x = "PCoA1 (31.2%)")
+
+ggsave("Fig 3d", plot=betaplotG2, device = png, width =10, height=10, dpi=300)
+```
+
+Adonis test - testing significance of beta-diversity differences
+```{r, eval=F}
+set.seed(1)
+
+sink("Adonis-Betadisper_RelAbund_Gen1.txt")
+print("###############################################################")
+print("Difference between gut and feces in generation 1 based on relative abundance data - Bray-Curtis dissimilarities")
+# Calculate bray curtis distance matrix
+bray <- phyloseq::distance(ps.gen1, method = "bray", weighted=TRUE)
+
+# make a data frame from the scaled sample_data
+sampledf <- data.frame(sample_data(ps.gen1))
+
+# Adonis test
+set.seed(867)
+adonis(bray ~ Sample_type, data = sampledf)
+
+# test of Homegeneity of dispersion
+beta <- betadisper(bray, sampledf$Sample_type)
+
+# run a permutation test to get a statistic and a significance score
+permutest(beta)
+
+sink()
+file.show("Adonis-Betadisper_RelAbund_Gen1.txt")
+
+
+sink("Adonis-Betadisper_AbsAbund_Gen2.txt")
+print("###############################################################")
+print("Difference between gut and feces in generation 2 based on absolute abundance data - Bray-Curtis dissimilarities")
+# Calculate bray curtis distance matrix
+bray <- phyloseq::distance(ps.copies.gen2, method = "bray", weighted=TRUE)
+
+# make a data frame from the scaled sample_data
+sampledf <- data.frame(sample_data(ps.copies.gen2))
+
+# Adonis test
+set.seed(867)
+adonis(bray ~ Sample_type, data = sampledf)
+
+# test of Homegeneity of dispersion
+beta <- betadisper(bray, sampledf$Sample_type)
+
+# run a permutation test to get a statistic and a significance score
+permutest(beta)
+
+sink()
+file.show("Adonis-Betadisper_AbsAbund_Gen2.txt")
+
+
+sink("Adonis-Betadisper_RelAbund_Gen2.txt")
+print("###############################################################")
+print("Difference between gut and feces in generation 2 based on relative abundance data - Bray-Curtis dissimilarities")
+# Calculate bray curtis distance matrix
+bray <- phyloseq::distance(ps.gen2, method = "bray", weighted=TRUE)
+
+# make a data frame from the scaled sample_data
+sampledf <- data.frame(sample_data(ps.gen2))
+
+# Adonis test
+set.seed(867)
+adonis(bray ~ Sample_type, data = sampledf)
+
+# test of Homegeneity of dispersion
+beta <- betadisper(bray, sampledf$Sample_type)
+
+# run a permutation test to get a statistic and a significance score
+permutest(beta)
+
+sink()
+file.show("Adonis-Betadisper_RelAbund_Gen2.txt")
+```
+
+## Test if any ASV differs in absolute abundance between gut-inoculated and feces-inoculated bees in generation 2 (Supplementary Figure 3)
+(note: this chunk takes a while to run) 
+```{r}
+copies <- as.data.frame(otu_table(ps.copies.gen2))
+copies$Group = row.names(copies)
+rownames(copies) <- NULL
+
+copynums=copies %>% gather(Sample.name, CopyNumbers, 1:length(copies)-1)
+samdf_filt <- subset(samdf, Generation == '2' & Sample_type != "Control")
+copynums = merge(copynums, samdf_filt, by.x="Sample.name", by.y = "Sample_ID")
+
+#Change 0 to 1 for log transformation
+copynums[copynums ==0] = 1
+copynums$log_cop = log10(copynums$CopyNumbers)
+copynums$Sample_type <- factor(copynums$Sample_type)
+
+# Permutation linear model. Function randomizes the "rpse" data "nrep" times and performs a linear model. p-value is calculated by the ratio of number of F-values that is bigger that the actualF-value
+anovaFF<-function(rpse, v1, nrep) {
+  lmer<-lm(rpse~v1) 
+  obs.F=data.frame(t(anova(lmer)$F))
+  names(obs.F)<-c("v1")
+  for (i in 2:nrep)  {
+    rpse<-sample(rpse)
+    obs.F[i,]<-t(anova(lm(rpse~v1))$F) }
+  pval<-NULL
+  for (j in 1:ncol(obs.F)) {
+    pval[j]<-sum(obs.F[,j]>=obs.F[1,j])/length(obs.F[,j]) }
+  # optional:to show coefficients
+  print(summary(lmer)[4])
+  # optional: to show R^2
+  print(summary(lmer)[8])
+  # optional: to show adjusted R^2
+  print(summary(lmer)[9])
+  cat("P-value:")
+  return(pval)
+  cat("\n") 
+}
+
+
+#Run permutation ANOVA
+t <- levels(as.factor(copynums$Group))
+sink("ANOVA-ASVstats.txt") # sink will print the results from the ANOVA loop to a txt file
+for (ii in t){ 
+  dsub = copynums[copynums$Group==ii,]  
+  cat(ii, "\n")
+  print(anovaFF(dsub$log_cop, dsub$Sample_type, 10000))
+  cat("\n") 
+  cat("\n") 
+  cat("\n") 
+}
+sink()
+
+setwd("/Users/Project/DADA2/analysis/02_dada2")
+require("knitr")
+opts_knit$set(root.dir = "~/Users/Project/DADA2/analysis/02_dada2")
+file.show("ANOVA-ASVstats.txt")
+
+library(multcomp)
+#Run TUKEY for multiple comparisons
+sink("Tukey-ASVstats.txt")
+for (ii in t){ 
+  dsub = copynums[copynums$Group==ii,]
+  cat(ii, "\n")
+  mod=lm(log_cop~Sample_type,data=dsub)
+  print(summary(glht(mod, linfct=mcp(Sample_type="Tukey")), test = adjusted(type = "bonferroni")))
+  cat("\n") 
+  cat("\n") 
+  cat("\n")
+}
+sink()
+
+file.show("Tukey-ASVstats.txt")
+```
+
+List statistically significant ASVs 
+```{r}
+setwd("/Users/Project/DADA2/analysis/02_dada2")
+getwd()
+txt<-readLines("ANOVA-ASVstats.txt")
+pval_lines <- grep("P-value:[[]1[]]", txt)
+pvals <- suppressWarnings(sapply(strsplit(txt[pval_lines], " "), 
+                          function(x) as.numeric(x[2])))
+sig_txt <- txt[unlist(lapply(pval_lines[which(pvals < 0.05)], `+`, -15:0))]
+sig_txt <- paste(sig_txt, collapse = "\n")
+cat(sig_txt)
+```
+
+Plot ASVs that differ significantly in absolute abundance in generation 2 (Supplementary Figure 3)
+```{r}
+library(ggplot2)
+library(plyr)
+
+copynums$Sample_type <- revalue(copynums$Sample_type, c("Gut-Feces"="Feces"))
+copynums$Sample_type <- factor(copynums$Sample_type, levels = c("Gut", "Feces"))
+
+ASV10 <- subset(copynums, Group=="ASV10")
+ASV10$Hive <- factor(ASV10$Hive)
+p1 <- ggplot(ASV10, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV10, ", italic("Bifidobacterium"))))+
+  theme_light()
+
+ASV13 <- subset(copynums, Group=="ASV13")
+ASV13$Hive <- factor(ASV13$Hive)
+p2 <- ggplot(ASV13, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV13, ", italic("Commensalibacter"))))+
+  theme_light()
+
+ASV21 <- subset(copynums, Group=="ASV21")
+ASV21$Hive <- factor(ASV21$Hive)
+p3 <- ggplot(ASV21, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV21, ", italic("Frischella"))))+ 
+  theme_light()
+
+ASV25 <- subset(copynums, Group=="ASV25")
+ASV25$Hive <- factor(ASV25$Hive)
+p4 <- ggplot(ASV25, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV25, ", italic("Bombilactobacillus "), "Firm4")))+
+  theme_light()
+
+ASV30 <- subset(copynums, Group=="ASV30")
+ASV30$Hive <- factor(ASV30$Hive)
+p5 <- ggplot(ASV30, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV30, ", italic("Bifidobacterium"))))+ 
+  theme_light()
+
+ASV38 <- subset(copynums, Group=="ASV38")
+ASV38$Hive <- factor(ASV38$Hive)
+p6 <- ggplot(ASV38, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV38, ", italic("Bombella"))))+
+  theme_light()
+
+ASV5 <- subset(copynums, Group=="ASV5")
+ASV5$Hive <- factor(ASV5$Hive)
+p7 <- ggplot(ASV5, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV5, ", italic("Lactobacillus "), "Firm5")))+
+  theme_light()
+
+ASV60 <- subset(copynums, Group=="ASV60")
+ASV60$Hive <- factor(ASV60$Hive)
+p8 <- ggplot(ASV60, aes(y=CopyNumbers, x=Sample_type))+
+  geom_point()+
+  geom_line(aes(group=Pair, color=Hive))+
+  geom_boxplot(alpha=0.1, width=0.1)+
+  ylab("Normalized 16S rRNA gene copies") +
+  ggtitle(expression(paste("ASV60, ", italic("Lactobacillus "), "Firm5")))+
+  theme_light()
+
+write.csv(p1[["data"]], "DifferentlyAbundantASVs_Generation2_ASV10.csv")
+write.csv(p2[["data"]], "DifferentlyAbundantASVs_Generation2_ASV13.csv")
+write.csv(p3[["data"]], "DifferentlyAbundantASVs_Generation2_ASV21.csv")
+write.csv(p4[["data"]], "DifferentlyAbundantASVs_Generation2_ASV25.csv")
+write.csv(p5[["data"]], "DifferentlyAbundantASVs_Generation2_ASV30.csv")
+write.csv(p6[["data"]], "DifferentlyAbundantASVs_Generation2_ASV38.csv")
+write.csv(p7[["data"]], "DifferentlyAbundantASVs_Generation2_ASV5.csv")
+write.csv(p8[["data"]], "DifferentlyAbundantASVs_Generation2_ASV60.csv")
+
+
+
+library(ggpubr)
+ggarrange(p1,p2,p3,p4,p5,p6,p7,p8, common.legend = T)
+ggsave(height=10,width=12,dpi=300, filename="Supp_Figure_3.pdf", useDingbats=FALSE)
+```
+
+## Test if any ASVs differ in relative abundance between sample types of generation 1  (Supplementary Fig. 2)
+
+To statistically compare gut and feces samples in generation 1 we cannot use qPCR-normalized data as the unit differ between gut and feces. We use DESeq2 analysis.
+```{r}
+library("DESeq2")
+packageVersion("DESeq2")
+
+diagdds1 = phyloseq_to_deseq2(ps.gen1, ~ Sample_type)
+diagdds1 = DESeq(diagdds1, test="Wald", fitType = "local", sfType = "poscounts")
+
+res1 = results(diagdds1, cooksCutoff = FALSE)
+alpha = 0.05
+sigtab1 = res1[which(res1$padj < alpha), ]
+sigtab1 = cbind(as(sigtab1, "data.frame"), as(tax_table(ps.gen1)[rownames(sigtab1), ], "matrix"))
+head(sigtab1)
+dim(sigtab1)
+```
+
+Plot significantly different ASVs (Supplementary Figure 2)
+```{r}
+library("ggplot2")
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+
+# Phylum order
+x = tapply(sigtab1$log2FoldChange, sigtab1$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtab1$Phylum = factor(as.character(sigtab1$Phylum), levels=names(x))
+# Annotated order
+x = tapply(sigtab1$log2FoldChange, sigtab1$Annotated, function(x) max(x))
+x = sort(x, TRUE)
+sigtab1$Annotated = factor(as.character(sigtab1$Annotated), levels=names(x))
+ggplot(sigtab1, aes(x=Annotated, y=log2FoldChange, color=Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+```
+
+## Scatter plots of ASVs in feces vs gut, separated by generation (Fig 2e & 3e)
+
+Retain ASVs that have at least 1% rel abundance across 5 samples
+```{r}
+### Generation 1 ###
+library(genefilter)
+proportions = transform_sample_counts(ps.copies.gen1, function(x) {x/sum(x)})
+proportions = filter_taxa(proportions, filterfun(kOverA(5, 0.01)), TRUE) # Keep only ASVs that are 1% across two samples
+
+#calculate ratios
+ratios = merge( tax_table(proportions),otu_table(proportions), by="row.names")
+copynum = data.frame(sample_data(proportions)[,"CopyNum_norm"])
+
+row.names(ratios) <- ratios[,1]
+
+ratios <- ratios[,10:length(ratios)]
+
+copies = data.frame(row.names = (row.names(ratios)))
+for (i in 1:ncol(ratios)){
+  numbers = ratios[,i]*copynum$CopyNum_norm[i]
+  copies = cbind(copies,numbers)
+}
+colnames(copies) = colnames(ratios)
+
+# Phyloseq object with the combined data
+ps.copies.gen1.filt <- phyloseq(otu_table(copies, taxa_are_rows=T),
+               sample_data(samdf),
+               tax_table(proportions),
+               phy_tree(proportions))
+
+
+mdf = psmelt(ps.copies.gen1.filt)
+mdf
+
+library(dplyr)
+library(plotrix)
+comp <- mdf %>%
+    dplyr::group_by(OTU, Sample_type, Annotated) %>%
+     dplyr::summarise(Mean = mean(Abundance, na.rm = TRUE), se = std.error(Abundance, na.rm = TRUE))
+
+library(reshape2)
+comp1 <- dcast(comp, OTU + Annotated ~ Sample_type, value.var=c("Mean"))
+comp2 <- dcast(comp, OTU + Annotated ~ Sample_type, value.var=c("se"))
+comp3 <- merge(comp1,comp2, by = "OTU")
+
+pl1 <- ggplot(data = comp3, aes(x = Feces.x,y = Gut.x)) +
+  geom_errorbar(aes(ymin = Gut.x-Gut.y, ymax = Gut.x+Gut.y)) +
+    geom_errorbarh(aes(xmin = Feces.x-Feces.y,xmax = Feces.x+Feces.y)) +
+    geom_point(aes(col=Annotated.x)) +
+    labs(title = "Generation 1", y = "Normalized 16S rRNA gene copies per gut", x = expression(paste("16S rRNA gene copies per ", mu,"l of feces")), colour="Classification") +
+    geom_smooth(method='lm', se=F) +
+    stat_regline_equation(label.x=100, label.y=1.6e07) +
+    stat_cor(aes(label=..rr.label..), label.x=100, label.y=1.5e07)
+pl1
+
+# Sample plot but with Log10 axes (note that regression results change)
+pl2 <- ggplot(data = comp3, aes(x = Feces.x,y = Gut.x)) +
+  geom_errorbar(aes(ymin = Gut.x-Gut.y, ymax = Gut.x+Gut.y)) +
+    geom_errorbarh(aes(xmin = Feces.x-Feces.y,xmax = Feces.x+Feces.y)) +
+    geom_point(aes(col=Annotated.x)) +
+  scale_y_log10()+
+  scale_x_log10()+
+    labs(title = "Generation 1", y = "Normalized 16S rRNA gene copies per gut", x = expression(paste("16S rRNA gene copies per ", mu,"l of feces")), colour="Classification") +
+    geom_smooth(method='lm', se=F) +
+    stat_regline_equation(label.x=2.5, label.y=7) +
+    stat_cor(aes(label=..rr.label..), label.x=2.5, label.y=6.9)
+pl2
+
+
+### Generation 2 ###
+proportions = transform_sample_counts(ps.copies.gen2, function(x) {x/sum(x)})
+proportions = filter_taxa(proportions, filterfun(kOverA(5, 0.01)), TRUE) # Keep only ASVs that are 1% across two samples
+
+#calculate ratios
+ratios = merge( tax_table(proportions),otu_table(proportions), by="row.names")
+copynum = data.frame(sample_data(proportions)[,"CopyNum_norm"])
+
+row.names(ratios) <- ratios[,1]
+
+ratios <- ratios[,10:length(ratios)]
+
+copies = data.frame(row.names = (row.names(ratios)))
+for (i in 1:ncol(ratios)){
+  numbers = ratios[,i]*copynum$CopyNum_norm[i]
+  copies = cbind(copies,numbers)
+}
+colnames(copies) = colnames(ratios)
+
+# Phyloseq object with the combined data
+ps.copies.gen2.filt <- phyloseq(otu_table(copies, taxa_are_rows=T),
+               sample_data(samdf),
+               tax_table(proportions),
+               phy_tree(proportions))
+
+
+mdf = psmelt(ps.copies.gen2.filt)
+mdf
+
+library(dplyr)
+library(plotrix)
+comp <- mdf %>%
+    dplyr::group_by(OTU, Sample_type, Annotated) %>%
+     dplyr::summarise(Mean = mean(Abundance, na.rm = TRUE), se = std.error(Abundance, na.rm = TRUE))
+
+library(plyr)
+comp$Sample_type <- revalue(comp$Sample_type, c("Gut-Feces"="Feces"))
+
+
+library(reshape2)
+comp1 <- dcast(comp, OTU + Annotated ~ Sample_type, value.var=c("Mean"))
+comp2 <- dcast(comp, OTU + Annotated ~ Sample_type, value.var=c("se"))
+comp3 <- merge(comp1,comp2, by = "OTU")
+
+pl3 <- ggplot(data = comp3, aes(x = Feces.x, y = Gut.x)) +
+  geom_errorbar(aes(ymin = Gut.x-Gut.y, ymax = Gut.x+Gut.y)) +
+    geom_errorbarh(aes(xmin = Feces.x-Feces.y,xmax = Feces.x+Feces.y)) +
+    geom_point(aes(col=Annotated.x)) +
+    labs(title = "Generation 2", y = "Normalized 16S rRNA gene copies per gut", x = expression(paste("Normalized 16S rRNA gene copies per gut")), colour="Classification") +
+    geom_smooth(method='lm', se=F) +
+    stat_regline_equation(label.x=100, label.y=2e07) +
+    stat_cor(aes(label=..rr.label..), label.x=100, label.y=1.9e07)
+pl3
+
+# Sample plot but with Log10 axes (note that regression results change)
+pl4 <- ggplot(data = comp3, aes(x = Feces.x, y = Gut.x)) +
+  geom_errorbar(aes(ymin = Gut.x-Gut.y, ymax = Gut.x+Gut.y)) +
+    geom_errorbarh(aes(xmin = Feces.x-Feces.y,xmax = Feces.x+Feces.y)) +
+    geom_point(aes(col=Annotated.x)) +
+    scale_y_log10()+
+    scale_x_log10()+
+    labs(title = "Generation 2", y = "Normalized 16S rRNA gene copies per gut", x = expression(paste("Normalized 16S rRNA gene copies per gut")), colour="Classification") +
+    geom_smooth(method='lm', se=F) +
+    stat_regline_equation(label.x=5, label.y=7) +
+    stat_cor(aes(label=..rr.label..), label.x=5, label.y=6.9)
+pl4
+
+library(ggpubr)
+ggarrange(pl1,pl3)
+ggsave(file="FecesVsGutScatterPlots.pdf", width=17, height=6, useDingbats=FALSE)
+
+ggarrange(pl2,pl4)
+ggsave(file="FecesVsGutScatterPlots_LogAxes.pdf", width=17, height=6, useDingbats=FALSE)
+```
+
+## Alpha diversity (Fig. 2b & 3c)
+
+Plots
+```{r}
+library(ggpubr)
+library(ggbeeswarm)
+
+sample_data(ps.gen1)$Sample_type <- factor(sample_data(ps.gen1)$Sample_type, levels = c("Gut", "Feces"))
+sample_data(ps.gen1)$Hive <- factor(sample_data(ps.gen1)$Hive)
+p1 <- plot_richness(ps.gen1, x="Sample_type", color="Hive", measures=c("Shannon", "InvSimpson", "Observed")) +
+  geom_line(aes(group=Pair, color=Hive))+
+  theme(legend.position="none", axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=12)) +
+  theme_light()
+
+sample_data(ps.gen2)$Hive <- factor(sample_data(ps.gen2)$Hive)
+sample_data(ps.gen2)$Sample_type <- revalue(sample_data(ps.gen2)$Sample_type, c("Gut-Feces"="Feces"))
+sample_data(ps.gen2)$Sample_type <- factor(sample_data(ps.gen2)$Sample_type, levels = c("Gut", "Feces"))
+p2 <- plot_richness(ps.gen2, x="Sample_type", color="Hive", measures=c("Shannon", "InvSimpson", "Observed"))+
+  geom_line(aes(group=Pair, color=Hive))+
+  theme(legend.position="none", axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=12)) +
+  theme_light()
+
+library(ggpubr)
+ggarrange(p1,p2, ncol = 1, common.legend = T)
+ggsave(file="AlphaDiversity.pdf", width=8, height=6, useDingbats=FALSE)
+```
+
+Statistics
+```{r, echo=T, message=F, warning=F}
+##############################################################################
+### Generation 1 ###
+##############################################################################
+alpha1 <- p1$data
+alpha1.sh <- subset(alpha1, variable=="Shannon")
+alpha1.invSim <- subset(alpha1, variable=="InvSimpson")
+
+library(reshape2)
+
+### Shannon for generation 1 ###
+data_wide <- dcast(alpha1.sh, Pair ~ Sample_type, value.var="value")
+
+# Shapiro-Wilk normality test
+d <- with(data_wide, 
+          Gut - Feces)
+shapiro.test(d) # W = 0.87189, p-value = 0.01269, the test is significant so we cannot use paired t test
+sink('shapiro_shannon_gen1.txt')
+shapiro.test(d)
+sink()
+
+# Compute wilcoxon test
+res <- wilcox.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
+res
+sink('Wilcoxon_shannon_gen1.txt')
+res
+sink()
+
+#### InvSimpson gen 1 ###
+data_wide <- dcast(alpha1.invSim, Pair ~ Sample_type, value.var="value")
+
+# Shapiro-Wilk normality test
+d <- with(data_wide, 
+          Gut - Feces)
+shapiro.test(d) # W = 0.95861, p-value = 0.5165, the test is not significant so we can use paired t test
+sink('shapiro_invsimpson_gen1.txt')
+shapiro.test(d)
+sink()
+
+# Compute t-test
+res <- t.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
+res
+sink('ttest_invsimpson_gen1.txt')
+res
+sink()
+
+##############################################################################
+### Generation 2 ###
+##############################################################################
+alpha2 <- p2$data
+alpha2.sh <- subset(alpha2, variable=="Shannon")
+alpha2.invSim <- subset(alpha2, variable=="InvSimpson")
+
+library(reshape2)
+
+### Shannon for generation 2 ###
+data_wide <- dcast(alpha2.sh, Pair ~ Sample_type, value.var="value")
+
+# Shapiro-Wilk normality test 
+d <- with(data_wide, 
+          Gut - Feces)
+shapiro.test(d) # W = 0.96406, p-value = 0.6545, the test is not significant so we can use paired t test
+
+# Compute t-test
+res <- t.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
+res 
+
+### InvSimpson gen 2 ###
+
+data_wide <- dcast(alpha2.invSim, Pair ~ Sample_type, value.var="value")
+
+# Shapiro-Wilk normality test 
+d <- with(data_wide, 
+          Gut - Feces)
+shapiro.test(d) # W = 0.92788, p-value = 0.1583, the test is not significant so we can use paired t test
+
+# Compute t-test
+res <- t.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
+res 
+```
+
+## We check if the difference we see between gut and feces in Alpha diversity for generation 1 is driven by chloroplasts (present in gut but not fecal samples)
+
+Plot
+```{r}
+library(ggpubr)
+library(ggbeeswarm)
+
+ps.gen1.nochlo <- subset_taxa(ps.gen1, Order !="Chloroplast", prunesamples=TRUE) 
+
+p1 <- plot_richness(ps.gen1.nochlo, x="Sample_type", color="Hive", measures=c("Shannon", "InvSimpson", "Observed")) +
+  # geom_beeswarm(dodge.width = 1)+ 
+  # geom_boxplot(alpha=0.1, width=0.2)+ 
+  geom_line(aes(group=Pair, color=Hive))+
+  theme(legend.position="none", axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=12)) +
+  theme_light()
+
+p1
+```
+
+Statistics after removing chloroplasts
+```{r, echo=T, message=F, warning=F}
+alpha1 <- p1$data
+alpha1.sh <- subset(alpha1, variable=="Shannon")
+alpha1.invSim <- subset(alpha1, variable=="InvSimpson")
+
+library(reshape2)
+
+### Shannon for generation 1 ###
+data_wide <- dcast(alpha1.sh, Pair ~ Sample_type, value.var="value")
+
+# Shapiro-Wilk normality test
+d <- with(data_wide, 
+          Gut - Feces)
+shapiro.test(d) # W = 0.85422, p-value = 0.006278, the test is significant so we cannot use paired t test
+
+# Compute wilcoxon 
+res <- wilcox.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
+res 
+
+### InvSimpson gen 1 ###
+data_wide <- dcast(alpha1.invSim, Pair ~ Sample_type, value.var="value")
+
+# Shapiro-Wilk normality test for the difference between paired values
+d <- with(data_wide, 
+          Gut - Feces)
+shapiro.test(d) # W = 0.87365, p-value = 0.01363, the test is significant so we cannot use paired t test
+
+shapiro.test(alpha1.invSim$value)
+bartlett.test(alpha1.invSim$value, alpha1.invSim$Sample_type)
+t.test(alpha1.invSim$value ~ alpha1.invSim$Sample_type)
+
+# Compute wilcoxon
+res <- wilcox.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
+res 
+```
+
+## Procrustes analysis and Mantel test (Fig. 2d, 3f and supplementary fig. 4)
+```{r}
+##############################################################################
+### Generation 1 ###
+##############################################################################
+g1 <- otu_table(ps.copies.gen1)
+fec1 <- g1[,grep("FH", colnames(g1)) ]
+gut1 <- g1[,grep("GH", colnames(g1)) ]
+fec1 <- fec1[rowSums(fec1[])>0,]
+gut1 <- gut1[rowSums(gut1[])>0,]
+
+br_fec1 <- ordinate(
+  physeq = fec1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+br_gut1 <- ordinate(
+  physeq = gut1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+fec2 <- merge(br_fec1$vectors, samdf["Pair"], by=0)
+rownames(fec2) <- fec2$Pair
+fec2$Pair <- NULL
+fec2$Row.names <- NULL
+
+gut2 <- merge(br_gut1$vectors, samdf["Pair"], by=0)
+rownames(gut2) <- gut2$Pair
+gut2$Pair <- NULL
+gut2$Row.names <- NULL
+
+pro1 <- ade4::procuste(dfX = fec2[, c("Axis.1", "Axis.2")],
+                       dfY = gut2[, c("Axis.1", "Axis.2")])
+# Add the procruste rotated and scaled coordinates to each table
+fec2[, c("New1", "New2")] <- pro1$tabX
+gut2[, c("New1", "New2")] <- pro1$tabY
+
+fec2$Sample_type <- "Feces"
+gut2$Sample_type <- "Gut"
+fec2$Sample_ID <- rownames(fec2)
+gut2$Sample_ID <- rownames(gut2)
+
+# Combine the tables for plotting
+keepCols = c("New1", "New2", "Sample_type", "Sample_ID")
+procrustdt = rbind(fec2[keepCols],
+                   gut2[keepCols])
+
+# Now define the ggplot object connecting points with the same sample ID, but different distances
+p1 <- ggplot(procrustdt, aes(New1, New2,
+                       color = Sample_type)) + 
+      geom_point(size = 5) +
+      geom_line(aes(group = Sample_ID), color = "black") + 
+      ggtitle("Feces and gut samples in generation 1")+
+      theme_bw() +
+      theme(legend.position="bottom")
+
+
+library(vegan)
+pca.fec <- vegdist(t(fec1), method = "bray")
+pca.gut <- vegdist(t(gut1), method = "bray")
+
+### Procrustes test ###
+set.seed(4563)
+a <- protest(X = pca.gut, Y = pca.fec, scores = "sites", permutations = 999)
+sink("procrust_gen1.txt")
+a
+sink()
+
+
+### Mantel test ###
+Mantel_gen1= mantel(pca.fec, pca.gut, method = "spearman", permutations = 9999, na.rm = TRUE)
+Mantel_gen1
+
+##############################################################################
+### Generation 2 ###
+##############################################################################
+
+g1 <- otu_table(ps.copies.gen2)
+fec1 <- g1[,grep("FH", colnames(g1)) ]
+gut1 <- g1[,grep("GH", colnames(g1)) ]
+fec1 <- fec1[rowSums(fec1[])>0,]
+gut1 <- gut1[rowSums(gut1[])>0,]
+
+br_fec1 <- ordinate(
+  physeq = fec1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+br_gut1 <- ordinate(
+  physeq = gut1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+
+fec2 <- merge(br_fec1$vectors, samdf["Pair"], by=0)
+rownames(fec2) <- fec2$Pair
+fec2$Pair <- NULL
+fec2$Row.names <- NULL
+
+gut2 <- merge(br_gut1$vectors, samdf["Pair"], by=0)
+rownames(gut2) <- gut2$Pair
+gut2$Pair <- NULL
+gut2$Row.names <- NULL
+
+pro1 <- ade4::procuste(dfX = fec2[, c("Axis.1", "Axis.2")],
+                       dfY = gut2[, c("Axis.1", "Axis.2")])
+# Add the procruste rotated and scaled coordinates to each table
+fec2[, c("New1", "New2")] <- pro1$tabX
+gut2[, c("New1", "New2")] <- pro1$tabY
+
+fec2$Sample_type <- "Feces"
+gut2$Sample_type <- "Gut"
+fec2$Sample_ID <- rownames(fec2)
+gut2$Sample_ID <- rownames(gut2)
+
+# Combine the tables for plotting
+keepCols = c("New1", "New2", "Sample_type", "Sample_ID")
+procrustdt = rbind(fec2[keepCols],
+                   gut2[keepCols])
+
+# Now define the ggplot object connecting points with the same sample ID, but different distances
+p2 <- ggplot(procrustdt, aes(New1, New2,
+                       color = Sample_type)) + 
+      geom_point(size = 5) +
+      geom_line(aes(group = Sample_ID), color = "black") + 
+      ggtitle("Feces- and gut-homogenate-inoculated bees in generation 2")+
+      theme_bw() +
+      theme(legend.position="bottom")
+
+library(ggpubr)
+ggarrange(p1,p2, common.legend = T)
+
+library(vegan)
+pca.fec <- vegdist(t(fec1), method = "bray")
+pca.gut <- vegdist(t(gut1), method = "bray")
+
+### Procrustes test ###
+set.seed(7632)
+b <- protest(X = pca.gut, Y = pca.fec, scores = "sites", permutations = 999)
+sink("procrust_gen2.txt")
+b
+sink()
+
+### Mantel test ###
+Mantel_gen2 = mantel(pca.fec, pca.gut, method = "spearman", permutations = 9999, na.rm = TRUE)
+Mantel_gen2
+
+# Export the analysis results as txt file
+sink("Mantel_gen1.txt")
+Mantel_gen1
+sink()
+sink("Mantel_gen2.txt")
+Mantel_gen2
+sink()
+
+##############################################################################
+### Gen 1 vs gen 2 ###
+##############################################################################
+pairing <- as.data.frame(cbind(rownames(samdf), paste0(samdf$Hive, "_",samdf$BeeNum)))
+rownames(pairing) <- pairing$V1
+colnames(pairing) <- c("Sample_ID", "CrossPair")
+
+# Generation 1 
+g1 <- otu_table(ps.copies.gen1)
+fec1 <- g1[,grep("FH", colnames(g1)) ]
+gut1 <- g1[,grep("GH", colnames(g1)) ]
+fec1 <- fec1[rowSums(fec1[])>0,]
+gut1 <- gut1[rowSums(gut1[])>0,]
+
+# Generation 2 
+g2 <- otu_table(ps.copies.gen2)
+fec2 <- g2[,grep("FH", colnames(g2)) ]
+gut2 <- g2[,grep("GH", colnames(g2)) ]
+fec2 <- fec2[rowSums(fec2[])>0,]
+gut2 <- gut2[rowSums(gut2[])>0,]
+
+#####
+### We first compare feces of gen 1 with feces inoculated bees in gen 2 ###
+#####
+
+br_fec1 <- ordinate(
+  physeq = fec1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+br_fec2 <- ordinate(
+  physeq = fec2, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+feces1 <- merge(br_fec1$vectors, pairing["CrossPair"], by=0)
+rownames(feces1) <- feces1$CrossPair
+feces1$CrossPair <- NULL
+feces1$Row.names <- NULL
+
+feces2 <- merge(br_fec2$vectors, pairing["CrossPair"], by=0)
+rownames(feces2) <- feces2$CrossPair
+feces2$CrossPair <- NULL
+feces2$Row.names <- NULL
+
+feces1 <- feces1[!(row.names(feces1) %in% "10_2"),] # Remove a sample which does not have data in gen 2
+
+pro1 <- ade4::procuste(dfX = feces1[, c("Axis.1", "Axis.2")],
+                       dfY = feces2[, c("Axis.1", "Axis.2")])
+# Add the procruste rotated and scaled coordinates to each table
+feces1[, c("New1", "New2")] <- pro1$tabX
+feces2[, c("New1", "New2")] <- pro1$tabY
+
+feces1$Sample_type <- "Feces"
+feces2$Sample_type <- "Feces-inoculated guts"
+feces1$Sample_ID <- rownames(feces1)
+feces2$Sample_ID <- rownames(feces2)
+
+# Combine the tables for plotting
+keepCols = c("New1", "New2", "Sample_type", "Sample_ID")
+procrustdt = rbind(feces1[keepCols],
+                   feces2[keepCols])
+
+# Now define the ggplot object connecting points with the same sample ID, but different distances
+p3 <- ggplot(procrustdt, aes(New1, New2,
+                       color = Sample_type)) + 
+      geom_point(size = 5) +
+      geom_line(aes(group = Sample_ID), color = "black") + 
+      ggtitle("Feces and feces-inoculated guts")+
+      theme_bw() +
+      theme(legend.position="bottom")
+
+
+fec1 <- fec1[,!(colnames(fec1) %in% "FH10-2.F1")] # Remove a sample which does not have data in gen 2
+library(vegan)
+pca.feces1 <- vegdist(t(fec1), method = "bray")
+pca.feces2 <- vegdist(t(fec2), method = "bray")
+
+### Procrustes test ###
+set.seed(4563)
+c <- protest(X = pca.feces2, Y = pca.feces1, scores = "sites", permutations = 999)
+sink("procrust_feces.txt")
+c
+sink()
+
+### Mantel test ###
+Mantel_feces= mantel(pca.feces1, pca.feces2, method = "spearman", permutations = 9999, na.rm = TRUE)
+Mantel_feces
+
+# Export the analysis results as txt file
+sink("Mantel_feces.txt")
+Mantel_feces
+sink()
+
+#####
+### Now we compare guts of gen 1 with gut homogenate-inoculated bees in gen 2
+#####
+
+br_gut1 <- ordinate(
+  physeq = gut1, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+br_gut2 <- ordinate(
+  physeq = gut2, 
+  method = "PCoA", 
+  distance = "bray", 
+  trymax = 100
+)
+
+guts1 <- merge(br_gut1$vectors, pairing["CrossPair"], by=0)
+rownames(guts1) <- guts1$CrossPair
+guts1$CrossPair <- NULL
+guts1$Row.names <- NULL
+
+guts2 <- merge(br_gut2$vectors, pairing["CrossPair"], by=0)
+rownames(guts2) <- guts2$CrossPair
+guts2$CrossPair <- NULL
+guts2$Row.names <- NULL
+
+guts1 <- guts1[!(row.names(guts1) %in% "10_2"),] # Remove a sample which does not have data in gen 2
+
+pro1 <- ade4::procuste(dfX = guts1[, c("Axis.1", "Axis.2")],
+                       dfY = guts2[, c("Axis.1", "Axis.2")])
+
+# Add the procruste rotated and scaled coordinates to each table
+guts1[, c("New1", "New2")] <- pro1$tabX
+guts2[, c("New1", "New2")] <- pro1$tabY
+
+guts1$Sample_type <- "Guts"
+guts2$Sample_type <- "Gut-homogenate-inoculated guts"
+guts1$Sample_ID <- rownames(guts1)
+guts2$Sample_ID <- rownames(guts2)
+
+# Combine the tables for plotting
+keepCols = c("New1", "New2", "Sample_type", "Sample_ID")
+procrustdt = rbind(guts1[keepCols],
+                   guts2[keepCols])
+
+# Now define the ggplot object connecting points with the same sample ID, but different distances
+p4 <- ggplot(procrustdt, aes(New1, New2,
+                       color = Sample_type)) + 
+      geom_point(size = 5) +
+      geom_line(aes(group = Sample_ID), color = "black") + 
+      ggtitle("Guts and gut-homogenate-inoculated guts")+
+      theme_bw() +
+      theme(legend.position="bottom")
+
+gut1 <- gut1[,!(colnames(gut1) %in% "GH10-2.G1")] # Remove a sample which does not have data in gen 2
+library(vegan)
+pca.guts1 <- vegdist(t(gut1), method = "bray")
+pca.guts2 <- vegdist(t(gut2), method = "bray")
+
+### Procrustes test ###
+set.seed(4563)
+d <- protest(X = pca.guts2, Y = pca.guts1, scores = "sites", permutations = 999)
+sink("procrust_guts.txt")
+d
+sink()
+
+### Mantel test ###
+Mantel_guts= mantel(pca.guts1, pca.guts2, method = "spearman", permutations = 9999, na.rm = TRUE)
+Mantel_guts
+sink("Mantel_guts.txt")
+Mantel_guts
+sink()
+
+library(ggpubr)
+ggarrange(p1,p2,p3,p4)
+ggsave(file="ProcrustesPlots.pdf", width=12, height=12, useDingbats=FALSE)
+```
+
+# To save the session
+```{r, eval=F}
+save.image("/Users/Project/DADA2/FecesProject_Ampliseq.rdata")
+```
+
+# Session info
+```{r, echo=T, message=F, warning=F}
+sessionInfo()
+```
