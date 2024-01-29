@@ -1443,43 +1443,12 @@ alpha1 <- p1$data
 alpha1.sh <- subset(alpha1, variable=="Shannon")
 alpha1.invSim <- subset(alpha1, variable=="InvSimpson")
 
-library(reshape2)
+library(lmerTest)
+results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha1.sh) # Interaction significant
+car:::Anova(results)
 
-### Shannon for generation 1 ###
-data_wide <- dcast(alpha1.sh, Pair ~ Sample_type, value.var="value")
-
-# Shapiro-Wilk normality test
-d <- with(data_wide, 
-          Gut - Feces)
-shapiro.test(d) # W = 0.87189, p-value = 0.01269, the test is significant so we cannot use paired t test
-sink('shapiro_shannon_gen1.txt')
-shapiro.test(d)
-sink()
-
-# Compute wilcoxon test
-res <- wilcox.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
-res
-sink('Wilcoxon_shannon_gen1.txt')
-res
-sink()
-
-#### InvSimpson gen 1 ###
-data_wide <- dcast(alpha1.invSim, Pair ~ Sample_type, value.var="value")
-
-# Shapiro-Wilk normality test
-d <- with(data_wide, 
-          Gut - Feces)
-shapiro.test(d) # W = 0.95861, p-value = 0.5165, the test is not significant so we can use paired t test
-sink('shapiro_invsimpson_gen1.txt')
-shapiro.test(d)
-sink()
-
-# Compute t-test
-res <- t.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
-res
-sink('ttest_invsimpson_gen1.txt')
-res
-sink()
+results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha1.invSim) # Interaction not significant
+car:::Anova(results)
 
 ##############################################################################
 ### Generation 2 ###
@@ -1488,32 +1457,16 @@ alpha2 <- p2$data
 alpha2.sh <- subset(alpha2, variable=="Shannon")
 alpha2.invSim <- subset(alpha2, variable=="InvSimpson")
 
-library(reshape2)
+library(lmerTest)
+results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha2.sh) # Interaction not significant
+car:::Anova(results)
+results <- lmer(value ~ Sample_type + Hive + (1|Pair), data = alpha2.sh)
+car:::Anova(results)
 
-### Shannon for generation 2 ###
-data_wide <- dcast(alpha2.sh, Pair ~ Sample_type, value.var="value")
-
-# Shapiro-Wilk normality test 
-d <- with(data_wide, 
-          Gut - Feces)
-shapiro.test(d) # W = 0.96406, p-value = 0.6545, the test is not significant so we can use paired t test
-
-# Compute t-test
-res <- t.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
-res 
-
-### InvSimpson gen 2 ###
-
-data_wide <- dcast(alpha2.invSim, Pair ~ Sample_type, value.var="value")
-
-# Shapiro-Wilk normality test 
-d <- with(data_wide, 
-          Gut - Feces)
-shapiro.test(d) # W = 0.92788, p-value = 0.1583, the test is not significant so we can use paired t test
-
-# Compute t-test
-res <- t.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
-res 
+results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha2.invSim) # Interaction not significant
+car:::Anova(results)
+results <- lmer(value ~ Sample_type + Hive + (1|Pair), data = alpha2.invSim)
+car:::Anova(results)
 ```
 
 ## We check if the difference we see between gut and feces in Alpha diversity for generation 1 is driven by chloroplasts (present in gut but not fecal samples)
