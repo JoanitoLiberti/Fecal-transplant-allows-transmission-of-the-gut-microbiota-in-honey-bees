@@ -929,7 +929,7 @@ install.packages("ggforce")
 library(ggforce)
 
 # Improve aesthetic (Figure 3d)
-betaplotG2 <- p4 +
+betaplotG2 <- p3 +
 theme(legend.position="none")+
   geom_hline(yintercept=0, linewidth= 2, linetype=2, colour="darkgrey")+
   geom_vline(xintercept=0, linewidth= 2, linetype=2, colour="darkgrey")+
@@ -960,7 +960,7 @@ theme(legend.position="none")+
   )+
   labs(y= "PCoA2 (24.1%)", x = "PCoA1 (31.2%)")
 
-ggsave("Fig 3d", plot=betaplotG2, device = png, width =10, height=10, dpi=300)
+# ggsave("Fig 3d", plot=betaplotG2, device = png, width =10, height=10, dpi=300)
 ```
 
 Adonis test - testing significance of beta-diversity differences
@@ -978,7 +978,8 @@ sampledf <- data.frame(sample_data(ps.gen1))
 
 # Adonis test
 set.seed(867)
-adonis(bray ~ Sample_type, data = sampledf)
+adonis(bray ~ Sample_type*Hive, data = sampledf) # Interaction not significant
+adonis(bray ~ Sample_type+Hive, data = sampledf)
 
 # test of Homegeneity of dispersion
 beta <- betadisper(bray, sampledf$Sample_type)
@@ -999,6 +1000,26 @@ bray <- phyloseq::distance(ps.copies.gen2, method = "bray", weighted=TRUE)
 # make a data frame from the scaled sample_data
 sampledf <- data.frame(sample_data(ps.copies.gen2))
 
+# Add cage to metadata
+sampledf$Cage <- paste0(sampledf$Hive, sampledf$Sample_type)
+
+# test of Homegeneity of dispersion
+beta <- betadisper(bray, sampledf$Cage)
+
+cage_centroids<- beta$centroids + abs(min(beta$centroids)) # We add a constant to make values positive for Bray Curtis dissimilarities
+
+# Metadata by cage
+idTest <- unique(sampledf[c("Cage","Sample_type")])
+
+# We make sure the order of the columns in the metadata matches that of the CHC data
+idTest <- idTest[ order(match(idTest$Cage, rownames(cage_centroids))), ]
+
+# Adonis test
+set.seed(7586)
+
+adonis2(cage_centroids ~ idTest$Sample_type) # main effect
+
+
 # Adonis test
 set.seed(867)
 adonis(bray ~ Sample_type, data = sampledf)
@@ -1011,29 +1032,6 @@ permutest(beta)
 
 sink()
 file.show("Adonis-Betadisper_AbsAbund_Gen2.txt")
-
-
-sink("Adonis-Betadisper_RelAbund_Gen2.txt")
-print("###############################################################")
-print("Difference between gut and feces in generation 2 based on relative abundance data - Bray-Curtis dissimilarities")
-# Calculate bray curtis distance matrix
-bray <- phyloseq::distance(ps.gen2, method = "bray", weighted=TRUE)
-
-# make a data frame from the scaled sample_data
-sampledf <- data.frame(sample_data(ps.gen2))
-
-# Adonis test
-set.seed(867)
-adonis(bray ~ Sample_type, data = sampledf)
-
-# test of Homegeneity of dispersion
-beta <- betadisper(bray, sampledf$Sample_type)
-
-# run a permutation test to get a statistic and a significance score
-permutest(beta)
-
-sink()
-file.show("Adonis-Betadisper_RelAbund_Gen2.txt")
 ```
 
 ## Test if any ASV differs in absolute abundance between gut-inoculated and feces-inoculated bees in generation 2 (Supplementary Figure 3)
