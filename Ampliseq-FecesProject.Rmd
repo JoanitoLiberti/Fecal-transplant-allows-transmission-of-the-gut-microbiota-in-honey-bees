@@ -723,7 +723,6 @@ ggsave(file="Contaminant_Genus.pdf", width=20, height=15, useDingbats=FALSE)
 
 New phyloseq object after filtering out the contaminants
 ```{r, eval=F}
-# contamdf.prev$contaminant[rownames(contamdf.prev)=="ASV19"] <- FALSE # ASV19 is a real experimental bacterium, wrongly labeled as contaminant by decontam, so we modify that
 ps.noncontam <- prune_taxa(!contamdf.both$contaminant, ps)
 ps.noncontam
 ```
@@ -970,7 +969,7 @@ set.seed(1)
 sink("Adonis-Betadisper_RelAbund_Gen1.txt")
 print("###############################################################")
 print("Difference between gut and feces in generation 1 based on relative abundance data - Bray-Curtis dissimilarities")
-# Calculate bray curtis distance matrix
+# Calculate Bray Curtis distance matrix
 bray <- phyloseq::distance(ps.gen1, method = "bray", weighted=TRUE)
 
 # make a data frame from the scaled sample_data
@@ -978,10 +977,10 @@ sampledf <- data.frame(sample_data(ps.gen1))
 
 # Adonis test
 set.seed(867)
-adonis(bray ~ Sample_type*Hive, data = sampledf) # Interaction not significant
-adonis(bray ~ Sample_type+Hive, data = sampledf)
+adonis2(bray ~ Sample_type*Hive, data = sampledf) # Interaction not significant
+adonis2(bray ~ Sample_type+Hive, data = sampledf)
 
-# test of Homegeneity of dispersion
+# test of homogeneity of dispersion
 beta <- betadisper(bray, sampledf$Sample_type)
 
 # run a permutation test to get a statistic and a significance score
@@ -994,7 +993,7 @@ file.show("Adonis-Betadisper_RelAbund_Gen1.txt")
 sink("Adonis-Betadisper_AbsAbund_Gen2.txt")
 print("###############################################################")
 print("Difference between gut and feces in generation 2 based on absolute abundance data - Bray-Curtis dissimilarities")
-# Calculate bray curtis distance matrix
+# Calculate Bray Curtis distance matrix
 bray <- phyloseq::distance(ps.copies.gen2, method = "bray", weighted=TRUE)
 
 # make a data frame from the scaled sample_data
@@ -1003,7 +1002,7 @@ sampledf <- data.frame(sample_data(ps.copies.gen2))
 # Add cage to metadata
 sampledf$Cage <- paste0(sampledf$Hive, sampledf$Sample_type)
 
-# test of Homegeneity of dispersion
+# test of homogeneity of dispersion
 beta <- betadisper(bray, sampledf$Cage)
 
 cage_centroids<- beta$centroids + abs(min(beta$centroids)) # We add a constant to make values positive for Bray Curtis dissimilarities
@@ -1019,12 +1018,7 @@ set.seed(7586)
 
 adonis2(cage_centroids ~ idTest$Sample_type) # main effect
 
-
-# Adonis test
-set.seed(867)
-adonis(bray ~ Sample_type, data = sampledf)
-
-# test of Homegeneity of dispersion
+# test of homogeneity of dispersion
 beta <- betadisper(bray, sampledf$Sample_type)
 
 # run a permutation test to get a statistic and a significance score
@@ -1449,6 +1443,8 @@ car:::Anova(results)
 
 results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha1.invSim) # Interaction not significant
 car:::Anova(results)
+results <- lmer(value ~ Sample_type + Hive + (1|Pair), data = alpha1.invSim) 
+car:::Anova(results)
 
 ##############################################################################
 ### Generation 2 ###
@@ -1494,35 +1490,12 @@ alpha1 <- p1$data
 alpha1.sh <- subset(alpha1, variable=="Shannon")
 alpha1.invSim <- subset(alpha1, variable=="InvSimpson")
 
-library(reshape2)
+library(lmerTest)
+results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha1.sh) # Interaction significant
+car:::Anova(results)
 
-### Shannon for generation 1 ###
-data_wide <- dcast(alpha1.sh, Pair ~ Sample_type, value.var="value")
-
-# Shapiro-Wilk normality test
-d <- with(data_wide, 
-          Gut - Feces)
-shapiro.test(d) # W = 0.85422, p-value = 0.006278, the test is significant so we cannot use paired t test
-
-# Compute wilcoxon 
-res <- wilcox.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
-res 
-
-### InvSimpson gen 1 ###
-data_wide <- dcast(alpha1.invSim, Pair ~ Sample_type, value.var="value")
-
-# Shapiro-Wilk normality test for the difference between paired values
-d <- with(data_wide, 
-          Gut - Feces)
-shapiro.test(d) # W = 0.87365, p-value = 0.01363, the test is significant so we cannot use paired t test
-
-shapiro.test(alpha1.invSim$value)
-bartlett.test(alpha1.invSim$value, alpha1.invSim$Sample_type)
-t.test(alpha1.invSim$value ~ alpha1.invSim$Sample_type)
-
-# Compute wilcoxon
-res <- wilcox.test(data_wide$Gut, data_wide$Feces, paired = TRUE, alternative =  "two.sided")
-res 
+results <- lmer(value ~ Sample_type * Hive + (1|Pair), data = alpha1.invSim) # Interaction almost significant (p = 0.051)
+car:::Anova(results)
 ```
 
 ## Procrustes analysis and Mantel test (Fig. 2d, 3f and supplementary fig. 4)
